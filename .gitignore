@@ -6,3 +6,6 @@ bot.log
 bot.err.log
 bot.pid
 .tmp-test/
+
+.vercel
+.env*
