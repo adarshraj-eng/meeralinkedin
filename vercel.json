@@ -4,5 +4,5 @@
     "api/telegram.js": { "maxDuration": 60 },
     "api/cron.js": { "maxDuration": 60 }
   },
-  "crons": [{ "path": "/api/cron", "schedule": "*/15 * * * *" }]
+  "crons": [{ "path": "/api/cron", "schedule": "30 3 * * *" }]
 }
