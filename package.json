@@ -1,0 +1,25 @@
+{
+  "name": "meera-linkedin-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram bot that drafts post-ready LinkedIn content for Meera, with an approval gate before anything is published.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/smoke.js",
+    "set-webhook": "node scripts/set-webhook.mjs",
+    "delete-webhook": "node scripts/delete-webhook.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/genai": "^2.24.0",
+    "@upstash/redis": "^1.39.0",
+    "dotenv": "^17.0.0",
+    "grammy": "^1.30.0",
+    "zod": "^4.0.0"
+  }
+}
