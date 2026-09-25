@@ -13,6 +13,8 @@
 import { readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
 
+const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
+
 const DEFAULT_KEYS = ["TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY"];
 const ENVIRONMENTS = ["production", "preview", "development"];
 
@@ -42,15 +44,22 @@ for (const key of keys) {
     // Remove first: `vercel env add` on an existing name in the same
     // environment is rejected rather than overwritten.
     try {
-      execSync(`npx --yes vercel env rm ${key} ${environment} --yes`, { stdio: "pipe" });
+      execSync(`${NPX} --yes vercel env rm ${key} ${environment} --yes`, { stdio: "pipe" });
     } catch {
       // Not there yet on a first run - that is fine.
     }
 
     try {
-      execFileSync("npx", ["--yes", "vercel", "env", "add", key, environment], {
+      // On Windows npx is npx.cmd. Getting this wrong is worse than it looks:
+      // the remove above has already run, so a failure here leaves the
+      // variable missing from Vercel entirely rather than merely stale.
+      execFileSync(NPX, ["--yes", "vercel", "env", "add", key, environment], {
         input: value,
         stdio: ["pipe", "pipe", "pipe"],
+        // Node refuses to spawn a .cmd without a shell (EINVAL). Safe here:
+        // key and environment are fixed tokens, and the secret goes over
+        // stdin, never onto the command line where a shell could log it.
+        shell: process.platform === "win32",
       });
       console.log(`  ${environment.padEnd(12)} updated`);
     } catch (err) {
