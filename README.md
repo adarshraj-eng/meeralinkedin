@@ -221,3 +221,33 @@ Run this to see what your key can actually reach:
 ```powershell
 node -e "const {GoogleGenAI}=require('@google/genai');(async()=>{const ai=new GoogleGenAI({apiKey:process.env.GEMINI_API_KEY});for await(const m of await ai.models.list())console.log(m.name)})()"
 ```
+
+## The B1 pipeline
+
+A note no longer goes straight to drafting. Three stages run in order:
+
+**1. Scoring (B1.1).** Gemini scores the raw note 0–10 on how much of a post is actually in it. Below 6, no draft is written: the bot replies with the score and what's missing. Above 6, drafting continues. The gate is deliberately strict — "call the lab tomorrow" scores 0, "packaging is so annoying" scores 3, a note with a number and a mechanism scores 8–9. Every note is kept either way; `/notes` shows the log with reasons, which is how you tell whether the threshold is set right.
+
+**2. News angle (B1.2).** Gemini pulls a search phrase out of the approved note, and `src/news.js` fetches the top result from Google News RSS — no key, no account. The item is passed to the drafter with instructions to use it only if it genuinely fits. Any draft that uses it gets the source, date, link and verify flag appended.
+
+**3. Memory.** Notes (with scores) and approved drafts are written to the store — Upstash Redis on Vercel, JSON files locally. Rejected notes are kept, not deleted.
+
+### Two things the news stage deliberately refuses to do
+
+The bot only ever sees a **headline, publication and date** — never the article body. An early version wrote *"a consumer safety update reported by the FDA noted that application gaps remain one of the most common reasons people experience unexpected sun damage"*. Nothing in the headline said that. The model had invented a finding and attributed it to a named regulator, in Meera's name.
+
+So the drafter is now told, in the strongest terms available, that it has not read the article and may not state what the article says, found or concluded — only that coverage exists. And it may not use the item as evidence for anything: her own facts carry the argument, the news only establishes timeliness.
+
+**The verify flag is not decoration.** It goes only on drafts that actually used the item (`used_news` on each variant), because stamping a source block onto a post that ignored the article would be a false citation. Most headlines are too thin to use, and drafts ignoring them is the expected outcome.
+
+### Checking it
+
+```powershell
+node test/check-pipeline.mjs
+```
+
+Scores two strong notes and four weak ones against the threshold, then runs the news path end to end. Needs a key and costs several calls.
+
+### Known gap
+
+The drafter occasionally names the source publication inside the post ("coverage from the FDA"), which breaks her no-brands rule. The claim is true and the verify flag is present, so nothing is fabricated — but it needs removing by hand before posting. Tightening the prompt further is the fix; it wasn't landed because the Gemini key started returning 503/429 during testing.

@@ -126,3 +126,24 @@ test("the draft schema converts to JSON Schema Gemini will accept", async () => 
   // Nested objects inside arrays are the case that actually breaks in practice.
   assert.ok(!JSON.stringify(schema.properties.variants).includes("additionalProperties"));
 });
+
+test("the pipeline's time budgets fit inside Vercel's maxDuration", async () => {
+  const { config } = await import("../src/config.js");
+  const vercel = JSON.parse(await fs.readFile("./vercel.json", "utf8"));
+  const maxDuration = vercel.functions["api/telegram.js"].maxDuration * 1000;
+
+  // One Telegram update runs: score -> keywords -> news fetch -> draft.
+  // If the sum exceeds maxDuration, Vercel kills the function mid-flight and
+  // Telegram gets a 500, then retries the same update - which is how the
+  // deployed bot started failing. Keep real margin here.
+  const NEWS_FETCH_MS = 8000; // news.js TIMEOUT_MS
+  const OVERHEAD_MS = 3000; // redis, telegram round trips, cold start slack
+  const worst =
+    config.scoreBudgetMs + config.keywordBudgetMs + NEWS_FETCH_MS + config.llmBudgetMs + OVERHEAD_MS;
+
+  assert.ok(
+    worst < maxDuration,
+    `worst-case pipeline ${worst}ms must stay under maxDuration ${maxDuration}ms`,
+  );
+  assert.ok(worst < maxDuration - 5000, `leave >=5s margin; currently ${maxDuration - worst}ms`);
+});

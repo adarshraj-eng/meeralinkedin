@@ -34,6 +34,16 @@ export const config = {
       return Boolean(this.accessToken && this.authorUrn);
     },
   },
+  // How long the model calls may spend retrying before giving up. Must stay
+  // comfortably under vercel.json maxDuration (60s) for api/telegram.js:
+  // a function killed mid-flight returns a 500 and Telegram retries the
+  // whole update, which makes a busy-model problem worse.
+  // The drafting call gets the lion's share; the two mechanical calls and
+  // the 8s news fetch have to fit alongside it inside the same 60s.
+  llmBudgetMs: Number(process.env.LLM_BUDGET_MS || 26000),
+  scoreBudgetMs: Number(process.env.SCORE_BUDGET_MS || 9000),
+  keywordBudgetMs: Number(process.env.KEYWORD_BUDGET_MS || 6000),
+
   // Only used by the Vercel deployment (api/telegram.js, api/cron.js). Both
   // are optional but recommended: without them, anyone who finds the deployed
   // URL can hit those endpoints directly.

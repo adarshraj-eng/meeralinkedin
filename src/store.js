@@ -31,6 +31,7 @@ const DEFAULT_USER = {
   voiceSamples: [],
   history: [], // recent {role, content} turns, for context across messages
   drafts: [], // approved posts
+  notes: [], // every note received, with its score - kept whether or not it was drafted
   auto: null, // filled from DEFAULT_AUTO on load
 };
 
@@ -45,6 +46,9 @@ export const DEFAULT_AUTO = {
 
 export const MAX_HISTORY_TURNS = 16;
 export const MAX_VOICE_SAMPLES = 8;
+// Rejected notes are kept, not deleted: they are the record of what the gate
+// turned away, which is how you tell whether the threshold is set right.
+export const MAX_NOTES = 200;
 
 const writeQueues = new Map();
 

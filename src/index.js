@@ -18,6 +18,7 @@ await bot.api.setMyCommands([
   { command: "new", description: "Start a fresh post" },
   { command: "profile", description: "Edit who you are" },
   { command: "voice", description: "Teach me your writing voice" },
+  { command: "notes", description: "Every note I scored, and why" },
   { command: "drafts", description: "Posts you've approved" },
   { command: "publish", description: "Post an approved draft to LinkedIn" },
   { command: "help", description: "How this works" },

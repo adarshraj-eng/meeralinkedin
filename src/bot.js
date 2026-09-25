@@ -1,7 +1,8 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { config } from "./config.js";
-import { loadUser, updateUser, MAX_HISTORY_TURNS, MAX_VOICE_SAMPLES } from "./store.js";
-import { draftPosts, RefusalError } from "./llm.js";
+import { loadUser, updateUser, MAX_HISTORY_TURNS, MAX_VOICE_SAMPLES, MAX_NOTES } from "./store.js";
+import { draftPosts, scoreNote, extractKeywords, RefusalError } from "./llm.js";
+import { fetchTopNews, verifyBlock } from "./news.js";
 import { TWEAKS } from "./prompts.js";
 import { publishToLinkedIn } from "./publish.js";
 import { draftKeyboard, renderDraft, fullText, escapeHtml, findPlaceholders } from "./ui.js";
@@ -9,6 +10,9 @@ import { sendIdeas, getPendingIdeas, setPendingIdeas, clearPendingIdeas } from "
 import { getSession, setSession, clearSession } from "./sessions.js";
 
 export const bot = new Bot(config.telegramToken);
+
+/** Below this, a note is turned away instead of drafted (B1.1). */
+const SCORE_THRESHOLD = 6;
 
 const PROFILE_FIELDS = {
   name: "your name",
@@ -53,6 +57,7 @@ I work from your voice profile and your published facts, so I won't contradict a
 /new - start a fresh post, forget the current thread
 /profile - notes that override the voice profile
 /voice - add a recent post so drafts stay current
+/notes - every note I scored, and why
 /drafts - the posts you've approved
 /publish - post an approved draft to LinkedIn (only if set up)
 /whoami - your Telegram user ID
@@ -160,6 +165,29 @@ bot.command("drafts", async (ctx) => {
       { parse_mode: "HTML" },
     );
   }
+});
+
+bot.command("notes", async (ctx) => {
+  const user = await loadUser(ctx.from.id);
+  if (!user.notes.length) {
+    await ctx.reply("No notes scored yet. Send me one.");
+    return;
+  }
+
+  const recent = user.notes.slice(-15).reverse();
+  const drafted = user.notes.filter((n) => n.drafted).length;
+  const turned = user.notes.length - drafted;
+
+  const lines = recent.map((n) => {
+    const mark = n.drafted ? "✓" : "✗";
+    const snippet = n.text.length > 70 ? `${n.text.slice(0, 70)}...` : n.text;
+    return `${mark} <b>${n.score}/10</b> ${escapeHtml(snippet)}\n   <i>${escapeHtml(n.reason)}</i>`;
+  });
+
+  await ctx.reply(
+    `<b>Notes scored</b> - ${drafted} drafted, ${turned} turned away (of ${user.notes.length})\n\n${lines.join("\n\n")}`,
+    { parse_mode: "HTML" },
+  );
 });
 
 bot.command("publish", async (ctx) => {
@@ -464,6 +492,33 @@ async function addVoiceSample(ctx, text) {
   await ctx.reply(`Saved. I have ${user.voiceSamples.length} of your posts to learn from. Send /voice to add another.`);
 }
 
+/**
+ * B1.2 - keywords out of the note, then the top Google News item for them.
+ * Best-effort on purpose: if either step fails the draft still goes ahead
+ * without a news angle, because the post is the product.
+ */
+async function addNewsAngle(brief) {
+  try {
+    const { search_phrase } = await extractKeywords(brief);
+    const news = await fetchTopNews(search_phrase);
+    if (news) console.log(`news: "${search_phrase}" -> ${news.source}: ${news.headline}`);
+    return news;
+  } catch (err) {
+    console.warn("news: angle skipped -", err?.message);
+    return null;
+  }
+}
+
+/**
+ * The verify flag goes only on drafts that actually used the news item.
+ * Stamping a source block onto a post that ignored the article would be
+ * noise at best and a false citation at worst.
+ */
+function attachVerifyBlocks(variants, news) {
+  if (!news) return variants;
+  return variants.map((v) => (v.used_news ? { ...v, text: `${v.text.trim()}\n\n${verifyBlock(news)}` } : v));
+}
+
 async function runDraft(ctx, brief, instruction) {
   const chatId = ctx.chat.id;
   const s = await getSession(chatId);
@@ -477,12 +532,48 @@ async function runDraft(ctx, brief, instruction) {
 
   try {
     const user = await loadUser(ctx.from.id);
+    let news = null;
+
+    // B1.1 + B1.2 run on a fresh note only. A button revision is re-working a
+    // note that already passed the gate, so re-scoring it would be wrong (and
+    // would burn two extra calls on every tap).
+    if (!instruction) {
+      const verdict = await scoreNote(brief);
+      await updateUser(ctx.from.id, (u) => {
+        u.notes.push({
+          text: brief,
+          score: verdict.score,
+          reason: verdict.reason,
+          drafted: verdict.score >= SCORE_THRESHOLD,
+          at: Date.now(),
+        });
+        while (u.notes.length > MAX_NOTES) u.notes.shift();
+      });
+
+      if (verdict.score < SCORE_THRESHOLD) {
+        clearInterval(typing);
+        await ctx.reply(
+          `<b>No draft for this one.</b> <i>(${verdict.score}/10)</i>\n\n${escapeHtml(verdict.reason)}\n\n` +
+            "<i>Send it again with the missing detail and I'll write it.</i>",
+          { parse_mode: "HTML" },
+        );
+        return;
+      }
+
+      news = await addNewsAngle(brief);
+      s.news = news;
+      await setSession(chatId, s);
+    } else {
+      news = s.news || null;
+    }
+
     const result = await draftPosts({
       profile: user.profile,
       voiceSamples: user.voiceSamples,
       history: user.history,
       brief,
       instruction,
+      news,
     });
 
     if (result.needs_clarification && result.clarifying_question) {
@@ -497,14 +588,16 @@ async function runDraft(ctx, brief, instruction) {
       return;
     }
 
+    const variants = attachVerifyBlocks(result.variants, news);
+
     s.understanding = result.understanding;
-    s.variants = result.variants;
+    s.variants = variants;
     s.index = 0;
     await setSession(chatId, s);
 
-    await ctx.reply(renderDraft(result.understanding, result.variants, 0), {
+    await ctx.reply(renderDraft(result.understanding, variants, 0), {
       parse_mode: "HTML",
-      reply_markup: draftKeyboard(result.variants, 0),
+      reply_markup: draftKeyboard(variants, 0),
     });
 
     // Keep the drafts in history so follow-ups and tweaks have real context.
@@ -515,7 +608,7 @@ async function runDraft(ctx, brief, instruction) {
       });
       u.history.push({
         role: "assistant",
-        content: result.variants.map((v, i) => `Draft ${i + 1} (${v.label}):\n${v.text}`).join("\n\n"),
+        content: variants.map((v, i) => `Draft ${i + 1} (${v.label}):\n${v.text}`).join("\n\n"),
       });
       while (u.history.length > MAX_HISTORY_TURNS) u.history.shift();
     });
