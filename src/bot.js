@@ -1,7 +1,7 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { config } from "./config.js";
 import { loadUser, updateUser, MAX_HISTORY_TURNS, MAX_VOICE_SAMPLES, MAX_NOTES } from "./store.js";
-import { draftPosts, scoreNote, extractKeywords, RefusalError } from "./llm.js";
+import { draftPosts, scoreNote, extractKeywords, RefusalError, QuotaError } from "./llm.js";
 import { fetchTopNews, verifyBlock } from "./news.js";
 import { TWEAKS } from "./prompts.js";
 import { publishToLinkedIn } from "./publish.js";
@@ -618,6 +618,11 @@ async function runDraft(ctx, brief, instruction) {
   } catch (err) {
     if (err instanceof RefusalError) {
       await ctx.reply("I can't write that one. Try rephrasing, or ask for a different angle.");
+    } else if (err instanceof QuotaError) {
+      await ctx.reply(
+        "The Gemini API key is out of quota, so I can't draft anything right now. " +
+          "It usually resets within the day. Your note is saved - send it again once quota is back.",
+      );
     } else {
       console.error("draft failed", err);
       await ctx.reply("Something went wrong talking to the model. Try again in a moment.");

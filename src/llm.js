@@ -30,6 +30,9 @@ const IdeasSchema = z.object({
 
 export class RefusalError extends Error {}
 
+/** Every model returned 429 - the key is out of quota, not merely busy. */
+export class QuotaError extends Error {}
+
 /**
  * Gemini rejects a few JSON Schema keywords that Zod emits by default, and
  * ignores $ref, so inline everything and drop what it won't take.
@@ -64,7 +67,14 @@ function statusOf(err) {
  * "fetch failed" covers DNS, TLS and connection resets, which a bot that fires
  * unattended at 9am will hit eventually.
  */
+/** AbortSignal.timeout fired, or the request was otherwise aborted. */
+function isAbort(err) {
+  return err?.name === "TimeoutError" || err?.name === "AbortError" || /aborted/i.test(err?.message || "");
+}
+
 export function isRetryable(err) {
+  // Out of budget, so retrying is pointless.
+  if (isAbort(err)) return false;
   const status = statusOf(err);
   if (status === 429 || status === 500 || status === 503 || status === 504) return true;
   return /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network/i.test(
@@ -81,27 +91,65 @@ async function callWithFallback(request, budgetMs = config.llmBudgetMs) {
   const models = [config.model, ...config.fallbackModels.filter((m) => m !== config.model)];
   const deadline = Date.now() + budgetMs;
   let lastErr;
+  let quotaHits = 0;
 
-  for (const model of models) {
+  models: for (const model of models) {
     for (let attempt = 0; attempt < 3; attempt++) {
+      const remaining = deadline - Date.now();
       // Vercel kills the function at maxDuration and Telegram sees a 500, so
-      // stop retrying while there is still time to answer. Giving up cleanly
-      // beats being killed mid-flight.
-      if (Date.now() > deadline) {
+      // stop while there is still time to answer. Giving up cleanly beats
+      // being killed mid-flight.
+      if (remaining <= 0) {
         console.warn("llm: time budget exhausted, giving up early");
         throw lastErr || new Error("Ran out of time waiting for the model.");
       }
+
       try {
-        return await ai.models.generateContent({ model, ...request });
+        // The budget is worthless without this. Checking the clock only
+        // between attempts lets a single hung request run for minutes - one
+        // call was measured at 313s against a 26s budget - because nothing
+        // interrupts an await. The signal caps the request itself.
+        return await ai.models.generateContent({
+          model,
+          ...request,
+          config: { ...request.config, abortSignal: AbortSignal.timeout(remaining) },
+        });
       } catch (err) {
         lastErr = err;
+
+        // An abort means the budget ran out. Stop everything and fall through
+        // to the summary below - throwing here would skip it and surface a
+        // bare DOMException instead of the quota diagnosis we already have.
+        if (isAbort(err)) break models;
+
         if (!isRetryable(err)) throw err;
-        if (attempt < 2 && Date.now() + 1000 * 2 ** attempt < deadline) {
-          await sleep(1000 * 2 ** attempt);
+
+        // 429 means the key is out of quota, not that the model is busy.
+        // Retrying the same model cannot help and burns the budget, so move
+        // to the next one immediately.
+        if (statusOf(err) === 429) {
+          quotaHits++;
+          break;
         }
+
+        const backoff = 1000 * 2 ** attempt;
+        if (attempt < 2 && Date.now() + backoff < deadline) await sleep(backoff);
       }
     }
-    console.warn(`llm: ${model} unavailable (${statusOf(lastErr)}), trying next model`);
+    console.warn(`llm: ${model} unavailable (${statusOf(lastErr) ?? "network"}), trying next model`);
+  }
+
+  // A 429 anywhere in the chain is the actionable diagnosis, even if the other
+  // models failed differently (busy, aborted on the budget). Report quota
+  // rather than whichever error happened to land last.
+  if (quotaHits > 0) {
+    throw new QuotaError(
+      `${quotaHits} of ${models.length} models returned 429 - the Gemini API key is out of quota.`,
+    );
+  }
+  // An abort is the budget expiring, which reads as nothing at all unless named.
+  if (isAbort(lastErr)) {
+    throw new Error(`No model responded within ${Math.round(budgetMs / 1000)}s.`);
   }
   throw lastErr;
 }
