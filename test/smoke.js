@@ -147,3 +147,29 @@ test("the pipeline's time budgets fit inside Vercel's maxDuration", async () => 
   );
   assert.ok(worst < maxDuration - 5000, `leave >=5s margin; currently ${maxDuration - worst}ms`);
 });
+
+test("the draft shows the note's rating and the article, used or not", () => {
+  const news = {
+    headline: "Something & relevant <happened>",
+    source: "example.com",
+    date: "2026-09-25",
+    url: "https://news.example.com/x?a=1&b=2",
+  };
+
+  const used = ui.renderDraft("ok", [{ label: "A", text: "post", used_news: true }], 0, { score: 8, news });
+  assert.ok(used.includes("scored 8/10"), "rating should be visible on an accepted note");
+  assert.ok(used.includes("Used this article"));
+  assert.ok(used.includes("news.example.com"), "the link should be there");
+  assert.ok(used.includes("&amp;"), "headline and url must be HTML-escaped");
+
+  // An article that was found but ignored is still worth showing - silence
+  // would leave her unable to tell the two cases apart.
+  const unused = ui.renderDraft("ok", [{ label: "A", text: "post", used_news: false }], 0, { score: 7, news });
+  assert.ok(unused.includes("not used"));
+  assert.ok(unused.includes("news.example.com"));
+
+  // No meta (a button revision before news existed) must not crash or invent a score.
+  const bare = ui.renderDraft("ok", [{ label: "A", text: "post" }], 0);
+  assert.ok(!bare.includes("scored"));
+  assert.ok(!bare.includes("Article"));
+});

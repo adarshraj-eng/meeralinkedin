@@ -353,8 +353,9 @@ bot.callbackQuery(/^v:(\d+)$/, async (ctx) => {
   s.index = i;
   await setSession(ctx.chat.id, s);
   await ctx.answerCallbackQuery();
-  await ctx.editMessageText(renderDraft(s.understanding, s.variants, i), {
+  await ctx.editMessageText(renderDraft(s.understanding, s.variants, i, { score: s.score, news: s.news }), {
     parse_mode: "HTML",
+    link_preview_options: { is_disabled: true },
     reply_markup: draftKeyboard(s.variants, i),
   });
 });
@@ -560,6 +561,7 @@ async function runDraft(ctx, brief, instruction) {
         return;
       }
 
+      s.score = verdict.score;
       news = await addNewsAngle(brief);
       s.news = news;
       await setSession(chatId, s);
@@ -595,8 +597,9 @@ async function runDraft(ctx, brief, instruction) {
     s.index = 0;
     await setSession(chatId, s);
 
-    await ctx.reply(renderDraft(result.understanding, variants, 0), {
+    await ctx.reply(renderDraft(result.understanding, variants, 0, { score: s.score, news }), {
       parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
       reply_markup: draftKeyboard(variants, 0),
     });
 
